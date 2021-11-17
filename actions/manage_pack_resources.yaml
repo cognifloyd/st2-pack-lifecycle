@@ -1,0 +1,24 @@
+---
+name: manage_pack_resources
+runner_type: python-script
+description: |
+  Enable pack resources based on pack_resources.yaml distributed with the pack.
+  Supported resource types are: rules, policies, sensors, triggers, actions, aliases
+  Output is a dict with "success" bool and "packs" dict.
+  "packs" is a map where resource_type is the key, and the value is a resources map.
+  The resources map uses resource name for key and the value is a tuple of 3 bools, and an error message.
+    {success: bool, packs: {pack_name: {resource_type: {resource_name:
+      (want_enabled, enabled_before, enabled_after, error_message)
+    }}}}
+enabled: true
+entry_point: manage_pack_resources.py
+parameters:
+  from_packs:
+    type: array
+    description: "List of packs to work on."
+    required: true
+  check_mode:
+    type: boolean
+    description: |
+      If enabled, only report which resources would be changed. Do not actually make the changes.
+    default: false

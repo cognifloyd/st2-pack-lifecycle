@@ -1,0 +1,26 @@
+---
+name: deploy_pack
+description: |
+  Deploy a StackStorm pack, reenabling rules after install,
+  and force enabling resources (rules, policies, sensors, etc) based on
+  /opt/stackstorm/packs/<pack>/pack_resources.yaml if present.
+enabled: true
+entry_point: workflows/deploy_pack.yaml
+runner_type: orquesta
+parameters:
+  full_repo_name:
+    required: true
+    type: string
+    description: The full github org and repo (like copartit/st2-gitops).
+  git_ref:
+    required: true
+    type: string
+    description: A git ref (branch, tag, commit hash) to install. Generally this is master or dev.
+  pack:
+    required: false
+    type: string
+    # FIXME: removing "-" is probably not generic
+    description: |
+      The pack name (like st2gitops). If not defined, this is extracted from full_repo_name
+      by taking the repo name (like st2-gitops) and removing "stackstorm-" and "-".
+      If that heuristic is not correct, you must pass in the pack name here.

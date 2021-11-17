@@ -1,0 +1,29 @@
+---
+# <webui_base_url>:
+#   rules:
+#     # an enabled rule
+#     - <rule>
+#     # TODO: allow disabling rules using ^ prefix. Use ^ instead of ! because ! has special meaning in yaml.
+#     #- ^<rule>
+#   policies:
+#     - <policy>
+#   sensors:
+#     - <sensor>
+#   triggers:
+#     - <trigger>
+#   actions:
+#     - <action>
+#   aliases:
+#     - <alias>
+
+# all rules here should annotate the ticket that enabled/disabled the rule
+stackstorm.example.com:
+  rules: []
+  # either of these should work
+  # - <rule>
+  # - <pack>.<rule>
+  policies: []
+  sensors: []
+  triggers: []
+  actions: []
+  aliases: []

@@ -1,0 +1,17 @@
+---
+name: get_pack_commit_hash
+description: Get the current commit hash for the locally installed pack
+enabled: true
+runner_type: local-shell-cmd
+parameters:
+  pack:
+    required: true
+    type: string
+    description: pack name
+  cmd:
+    # get the commit hash for the currently checked out directory
+    default: git rev-parse HEAD
+    immutable: true
+  cwd:
+    default: /opt/stackstorm/packs/{{ pack }}/
+    immutable: true

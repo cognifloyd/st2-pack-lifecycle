@@ -1,0 +1,151 @@
+---
+version: "1"
+
+# leave metadata here, even if empty, to make sure defaults apply (bug in Vela)
+metadata: {}
+
+secrets:
+  - name: st2_api_key
+    key: org/team/st2.api_key
+    engine: native
+    type: shared
+
+{{- $st2Url := "https://st2.example.com" }}
+{{- $st2Version := "3.4.1" }}
+{{- $st2actionrunnerImageTag := "latest" }}
+
+{{- $policyPack := "__st2gitops__" }}
+{{- $policyPrefix := "delay" }}
+stages:
+  test-actions:
+    steps:
+      - name: ensure st2gitops.delay_new_pack_executions will not delay itself
+        ruleset:
+          branch: ["dev"]
+          event: ["push"]
+        image: dockerregistry.copart.com/devops/st2actionrunner:{{ $st2actionrunnerImageTag }}
+        environment: &st2env
+          PYTHONUNBUFFERED: "1"
+          ST2_BASE_URL: "{{ $st2Url }}"
+          ST2_AUTH_URL: "{{ $st2Url }}/auth/v1"
+          ST2_API_URL: "{{ $st2Url }}/api/v1"
+          ST2_STREAM_URL: "{{ $st2Url }}/stream/v1"
+        secrets:
+          - source: st2_api_key
+            target: st2_api_key
+        commands:
+          - set -e
+          # make sure any previous failures are cleaned up.
+          - st2 --cacert=true run st2gitops.delay_new_pack_executions log_level=INFO from_packs=st2gitops action=resume --attr id status start_timestamp end_timestamp stdout stderr
+          # There should not be any policies at this point.
+          - st2 --cacert=true policy list --attr resource_ref | { grep st2gitops || :; }
+
+          - |
+            ASYNC_EXEC_ID=$(
+              st2 --cacert=true run -a st2gitops.delay_new_pack_executions log_level=DEBUG from_packs=st2gitops action=delay check_mode=true |
+              grep 'st2 execution get' | sed -e 's/^.* get //')
+            echo execution_id=${ASYNC_EXEC_ID}
+          - timeout 30 st2 --cacert=true execution tail ${ASYNC_EXEC_ID} || :;
+          # There still should not be any policies.
+          - st2 --cacert=true policy list --attr resource_ref | { grep st2gitops || :; }
+
+          - |
+            ASYNC_EXEC_STATUS=$(st2 --cacert=true execution get --json ${ASYNC_EXEC_ID} | jq -r .status)
+            if [ "succeeded" != "${ASYNC_EXEC_STATUS}" ]; then
+              echo "The action did not complete successfully in check_mode!"
+              exit 2
+            fi
+          - |
+            ACTION_WOULD_AFFECT_SELF=$(
+              st2 --cacert=true execution get --json ${ASYNC_EXEC_ID} --attr result.result |
+              jq '.result.result.packs.st2gitops | has("st2gitops.delay_new_pack_executions")')
+          - |
+            if [ "true" = "${ACTION_WOULD_AFFECT_SELF}" ]; then
+              echo "The st2gitops.delay_new_pack_executions action would delay itself!"
+              echo "It should not be able to do this."
+              exit 3
+            fi
+
+      - name: test st2gitops.delay_new_pack_executions with playground pack
+        ruleset:
+          branch: ["dev"]
+          event: ["push"]
+        image: dockerregistry.copart.com/devops/st2actionrunner:{{ $st2actionrunnerImageTag }}
+        environment: *st2env
+        secrets:
+          - source: st2_api_key
+            target: st2_api_key
+        commands:
+          - set -e
+          # make sure any previous failures are cleaned up.
+          - st2 --cacert=true run st2gitops.delay_new_pack_executions log_level=INFO from_packs=playground action=resume --attr id status start_timestamp end_timestamp stdout stderr
+
+          - st2 --cacert=true run playground.DemoAction number1=20 number2=22
+          # There should not be any policies at this point.
+          - st2 --cacert=true policy list | { grep {{ $policyPack }}.{{ $policyPrefix }}. || :; }
+
+          - st2 --cacert=true run --tail st2gitops.delay_new_pack_executions log_level=DEBUG from_packs=playground action=delay
+          # There should be matching policies at this point.
+          - st2 --cacert=true policy list | grep {{ $policyPack }}.{{ $policyPrefix }}.
+          - |
+            # run an action (don't wait) to make sure it is delayed
+            ASYNC_EXEC_ID=$(st2 --cacert=true run -a playground.DemoAction number1=20 number2=22 | grep 'st2 execution get' | sed -e 's/^.* get //')
+            ASYNC_EXEC_STATUS_1=$(st2 --cacert=true execution get --json ${ASYNC_EXEC_ID} | jq -r .status)
+            # we wait to test the status until after policies have been deleted in the next step
+
+          - st2 --cacert=true run --tail st2gitops.delay_new_pack_executions log_level=DEBUG from_packs=playground action=resume
+          # There should not be any policies at this point.
+          - st2 --cacert=true policy list | { grep {{ $policyPack }}.{{ $policyPrefix }}. || :; }
+          - st2 --cacert=true run playground.DemoAction number1=20 number2=22
+          # wait for the action to exit if it hasn't yet
+          - timeout 30 st2 --cacert=true execution tail ${ASYNC_EXEC_ID} || :;
+          - ASYNC_EXEC_STATUS_2=$(st2 --cacert=true execution get --json ${ASYNC_EXEC_ID} | jq -r .status)
+          - |
+            if [ "delayed" != "${ASYNC_EXEC_STATUS_1}" ]; then
+              echo "The policy to delay actions failed to delay a new action execution!"
+              exit 2
+            fi
+          - |
+            if [ "succeeded" != "${ASYNC_EXEC_STATUS_2}" ]; then
+              echo "The delayed action did not complete successfully!"
+              exit 3
+            fi
+      - name: test st2gitops.deploy_pack with st2gitops pack
+        # also tests many other actions in st2gitops pack
+        ruleset:
+          branch: ["dev"]
+          event: ["push"]
+        image: dockerregistry.copart.com/devops/st2actionrunner:{{ $st2actionrunnerImageTag }}
+        environment: *st2env
+        secrets:
+          - source: st2_api_key
+            target: st2_api_key
+        commands:
+          # for st2 execution get, we use `--detail` to only report on the workflow, not its children
+          # otherwise, st2cli outputs multiple json docs, a dict and then an array which confuses jq.
+          - |
+            # run a long running workflow in another pack to make sure it does not get paused
+            ASYNC_EXEC_ID=$(st2 --cacert=true run -a playground.wf_sleep sleep_seconds=300 | grep 'st2 execution get' | sed -e 's/^.* get //')
+            ASYNC_EXEC_STATUS_1=$(st2 --cacert=true execution get --detail --json ${ASYNC_EXEC_ID} | jq -r .status)
+          - >
+            st2 --cacert=true run --tail st2gitops.deploy_pack
+            pack=st2gitops
+            full_repo_name=copartit/st2-gitops
+            git_ref=dev
+          - ASYNC_EXEC_STATUS_2=$(st2 --cacert=true execution get --detail --json ${ASYNC_EXEC_ID} | jq -r .status)
+          - |
+            if [ "running" != "${ASYNC_EXEC_STATUS_1}" ]; then
+              echo "The action was not running before deploy_pack! It was ${ASYNC_EXEC_STATUS_1}"
+              exit 2
+            fi
+          - |
+            if [ "completed" = "${ASYNC_EXEC_STATUS_2}" ]; then
+              echo "The deploy_pack action took too long! Our long running workflow already completed!"
+              exit 3
+            fi
+          - |
+            if [ "running" != "${ASYNC_EXEC_STATUS_2}" ]; then
+              echo "The action was not running after deploy_pack! It was ${ASYNC_EXEC_STATUS_2}"
+              exit 4
+            fi
+          - st2 --cacert=true execution cancel ${ASYNC_EXEC_ID} || :;

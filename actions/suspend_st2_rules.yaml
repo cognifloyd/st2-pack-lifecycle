@@ -1,0 +1,20 @@
+---
+name: suspend_st2_rules
+runner_type: python-script
+description: |
+  Suspend/re-enable stackstorm rules for gitops workflow (eg to upgrade/downgrade a pack).
+  Rules may be removed between suspend/resume, so this ignores any missing rules on resume.
+enabled: true
+entry_point: suspend_st2_rules.py
+parameters:
+  from_packs:
+    type: "array"
+    description: "List of packs to work on."
+    required: true
+  action:
+    type: "string"
+    description: "Suspend or resume."
+    enum:
+      - "suspend"
+      - "resume"
+    required: true

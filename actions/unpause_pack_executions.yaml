@@ -1,0 +1,11 @@
+---
+name: unpause_pack_executions
+runner_type: python-script
+description: Resume list of paused executions.
+enabled: true
+entry_point: unpause_pack_executions.py
+parameters:
+  executions:
+    type: array
+    description: "List of execution ids to unpause/resume."
+    required: true

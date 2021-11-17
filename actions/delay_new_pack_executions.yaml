@@ -1,0 +1,26 @@
+---
+name: delay_new_pack_executions
+runner_type: python-script
+description: |
+  Delay/resume new executions for actions in a given pack.
+  For action=delay creates a dynamic concurrency policy for every action in a pack with threshold=0.
+  For action=resume removes all such dynamic concurrency policies.
+enabled: true
+entry_point: delay_new_pack_executions.py
+parameters:
+  from_packs:
+    type: array
+    description: "List of packs to work on."
+    required: true
+  action:
+    type: string
+    description: "delay or resume"
+    enum:
+      - delay
+      - resume
+    required: true
+  check_mode:
+    type: boolean
+    description: |
+      If enabled, only report which actions would be delayed or resumed. Do not actually make the changes.
+    default: false

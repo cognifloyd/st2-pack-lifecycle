@@ -1,0 +1,285 @@
+---
+version: '1.0'
+input:
+  - pack # st2gitops
+  - full_repo_name # org/st2-gitops
+  - git_ref # branch, tag, or commit hash
+#  - announce_in
+
+output:
+  - pack_resources: <% ctx().pack_resources %>
+  - old_pack: <% ctx().old_pack %>
+  - new_pack: <% ctx().new_pack %>
+  # for the st2gitops pack, the git_refs will be the same because the vela workflow
+  # has already installed the new pack to inspect all workflows.
+  - old_git_ref: <% ctx().old_git_ref %>
+  - new_git_ref: <% ctx().new_git_ref %>
+
+vars:
+  - use_chatops: false
+  - requestor: ""
+  - channel: ""
+
+  - old_pack: {}
+  - new_pack: {}
+  - old_git_ref: ""
+  - new_git_ref: ""
+  - pack_resources: {}
+  - paused_in_pack: []
+
+  - ssh_git_url: git@github.com:<% ctx().full_repo_name %>.git
+  # FIXME: this is probably not generic
+  - pack: <% ctx().pack or ctx().full_repo_name.split("/")[1].replace({"stackstorm-" => "", "-" => ""}) %>
+
+tasks:
+  get_chatops_context:
+    action: c_int.get_chatops_context_py
+    input:
+      ctx: <% ctx().st2 %>
+    next:
+      - when: <% succeeded() %>
+        publish:
+          - api_user: <% result().result.api_user %>
+          - user: <% result().result.user %>
+          - source_channel: <% result().result.source_channel %>
+          - requestor: <% result().result.api_user or result().result.user %>
+          - channel: <% result().result.source_channel or "" %>
+#          - use_chatops: <% (ctx().requestor and ctx().channel) or bool(ctx().announce_in) %>
+          - use_chatops: <% (ctx().requestor and ctx().channel) %>
+        do:
+          - check_for_installed_pack
+
+  check_for_installed_pack:
+    # this does not provide the current installed commit hash. We have to grab that separately.
+    action: packs.get
+    input:
+      pack: <% ctx().pack %>
+    # output looks like:
+    # { "pack": {
+    #    "name": "...",
+    #    "description": "...",
+    #    "keywords": ["...", "..."],
+    #    "version": "2.0.2",
+    #    "author": "...",
+    #    "email": "...@example.com"
+    #  }, "git_status": "Status:..."}
+    next:
+      - when: <% succeeded() %>
+        publish:
+          - old_pack: <% result().result.pack %>
+        do:
+          - get_installed_commit_hash
+          - suspend_rules
+      - when: <% failed() %>
+        do: start_pack_install
+
+  get_installed_commit_hash:
+    action: st2gitops.get_pack_commit_hash
+    input:
+      pack: <% ctx().pack %>
+    # output.result.stdout = commit hash
+    next:
+      - when: <% succeeded() %>
+        publish:
+          - old_git_ref: <% result().stdout %>
+        do: start_pack_update
+      - when: <% failed() %>
+        do: start_pack_update
+
+  suspend_rules:
+    action: st2gitops.suspend_st2_rules
+    input:
+      action: suspend
+      from_packs:
+        - <% ctx().pack %>
+    next:
+      - when: <% completed() %>
+        do: start_pack_update
+
+  start_pack_install:
+    action: core.noop
+    next:
+#      - when: <% ctx().use_chatops %>
+#        do: chatops_start
+      - do: delay_new_pack_executions
+
+  start_pack_update:
+    join: 2
+    action: core.noop
+    next:
+#      - when: <% ctx().use_chatops %>
+#        do: chatops_start
+      - do: delay_new_pack_executions
+
+  delay_new_pack_executions:
+    action: st2gitops.delay_new_pack_executions
+    input:
+      from_packs:
+        - <% ctx().pack %>
+      action: delay
+    next:
+      - do: wait_or_pause_running_pack_executions
+
+  wait_or_pause_running_pack_executions:
+    action: st2gitops.wait_or_pause_running_pack_executions
+    input:
+      from_packs:
+        - <% ctx().pack %>
+    next:
+      # We do not need to pause any workflows in other packs because
+      # by this point all actions/workflows in the target pack
+      #  - are not running and some may be paused
+      #  - have policies delaying future executions
+      # So, if a workflow in another pack tries to use one of the actions in this pack,
+      # those workflows will effectively "pause" as well, delaying until their next action can run.
+      - when: <% succeeded() %>
+        do: unload_pack
+        publish:
+          - paused_in_pack: <% result().result.paused_executions_in_packs.get(ctx().pack, []) %>
+      - when: <% failed() %>
+        # if waiting or pausing failed for some reason. Do our best, but ignore the failure.
+        do: unload_pack
+
+#  chatops_start:
+#    action: chatops.post_message
+#    input:
+#      whisper: <% ctx().requestor = ctx().channel %>
+#      user: <% ctx().requestor %>
+#      channel: <% ctx().channel %> # TODO: announce_in list of channels as well
+#      message: Deploying pack <% ctx().pack %>
+#      extra:
+#        slack:
+#          color: '#0048d8'
+#          title: Deploy pack <% ctx().pack %>
+#          # footer: 'Target environment: <% ctx().env %>'  # TODO
+#          footer_icon: https://example.com/....png
+#          ts: <% int(now().timestamp) %>
+
+  # Ensure nothing tries to deploy with partially upgraded actions.
+  # This also removes any actions/rules that were deleted.
+  # This does not fail if the pack has already been removed.
+  unload_pack:
+    action: packs.unload
+    input:
+      packs:
+        - <% ctx().pack %>
+    next:
+      - when: <% succeeded() %>
+        do: install_pack
+      - when: <% failed() %>
+        do: revert_pack
+
+  install_pack:
+    action: packs.install
+    input:
+      packs:
+        - <% ctx().ssh_git_url %>=<% ctx().git_ref %>
+    next:
+      - when: <% succeeded() %>
+        do: resume_rules
+      - when: <% failed() %>
+        do: revert_pack
+
+  revert_pack:
+    action: packs.install
+    input:
+      packs:
+        - <% ctx().ssh_git_url %>=<% ctx().old_git_ref %>
+    next:
+      - when: <% succeeded() %>
+        do: resume_rules
+
+  resume_rules:
+    action: st2gitops.suspend_st2_rules
+    input:
+      action: resume
+      from_packs:
+        - <% ctx().pack %>
+    next:
+      - when: <% succeeded() %>
+        do:
+          - manage_pack_resources
+          - get_pack_metadata
+          - get_new_commit_hash
+
+  # /opt/stackstorm/packs/<pack>/pack_resources.yaml takes precedence over suspend/resume rules
+  # also, this handles more resource types than just rules
+  manage_pack_resources:
+    action: st2gitops.manage_pack_resources
+    input:
+      check_mode: false
+      from_packs:
+        - <% ctx().pack %>
+    next:
+      - when: <% completed() %>
+        publish:
+          - pack_resources: <% result().result.packs[ctx().pack] %>
+        do: finalize
+
+  get_pack_metadata:
+    action: packs.get
+    input:
+      pack: <% ctx().pack %>
+    next:
+      - when: <% succeeded() %>
+        publish:
+          - new_pack: <% result().result.pack %>
+        do: finalize
+      - when: <% failed() %>
+        do: finalize
+
+  get_new_commit_hash:
+    action: st2gitops.get_pack_commit_hash
+    input:
+      pack: <% ctx().pack %>
+    # output.result.stdout = commit hash
+    next:
+      - when: <% succeeded() %>
+        publish:
+          - new_git_ref: <% result().stdout %>
+        do: finalize
+      - when: <% failed() %>
+        do: finalize
+
+  finalize:
+    join: 3
+    action: core.noop
+    next:
+      - when: <% completed() and ctx().paused_in_pack %>
+        do: unpause_pack_executions
+      - when: <% completed() %>
+        do: unpause_pack_executions
+#      - when: <% completed() and ctx().use_chatops %>
+#        do: chatops_complete
+
+
+  unpause_pack_executions:
+    action: st2gitops.unpause_pack_executions
+    input:
+      executions: <% ctx().paused_in_pack %>
+    next:
+      - do: resume_new_pack_executions
+
+  resume_new_pack_executions:
+    action: st2gitops.delay_new_pack_executions
+    input:
+      from_packs:
+        - <% ctx().pack %>
+      action: resume
+#    next:
+#      - do: done
+
+#  chatops_complete:
+#    action: chatops.post_message
+#    input:
+#      whisper: <% ctx().requestor = ctx().channel %>
+#      user: <% ctx().requestor %>
+#      channel: <% ctx().channel %> # TODO: announce_in list of channels as well
+#      message: SUCCESS/REVERTED Deploying pack <% ctx().pack %> from version to version (commit to commit)
+#      extra:
+#        slack:
+#          color: '#0048d8'
+#          title: Deploy pack <% ctx().pack %>
+#          # footer: 'Target environment: <% ctx().env %>'  # TODO
+#          footer_icon: https://example.com/....png
+#          ts: <% int(now().timestamp) %>

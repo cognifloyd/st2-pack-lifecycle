@@ -1,0 +1,10 @@
+---
+# based on an internal Copart pack
+name: st2gitops
+description: StackStorm managed GitOps workflows for Copart
+keywords:
+    - copart
+    - gitops
+version: 0.3.3
+author: Jacob Floyd
+email: cognifloyd@gmail.com

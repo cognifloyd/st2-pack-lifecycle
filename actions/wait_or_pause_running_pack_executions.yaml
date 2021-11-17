@@ -1,0 +1,14 @@
+---
+name: wait_or_pause_running_pack_executions
+runner_type: python-script
+description: |
+  Wait for or pause executions for actions in a given pack.
+  This waits for simple (non-workflow) actions to complete.
+  After a delay, pause any running workflow executions in the pack.
+enabled: true
+entry_point: wait_or_pause_running_pack_executions.py
+parameters:
+  from_packs:
+    type: array
+    description: "List of packs to work on."
+    required: true
